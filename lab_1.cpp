@@ -84,9 +84,9 @@ void ListAllProcesses() {
     processIds.clear();
 
     // Print header
-    std::cout << std::left << std::setw(6) << "#" 
-              << std::setw(10) << "PID" 
-              << std::setw(40) << "Process Name" 
+    std::cout << std::left << std::setw(6) << "#"
+              << std::setw(10) << "PID"
+              << std::setw(40) << "Process Name"
               << std::setw(15) << "Thread Count" << std::endl;
     std::cout << std::string(71, '-') << std::endl;
 
@@ -94,9 +94,9 @@ void ListAllProcesses() {
     // Iterate through all processes
     do {
         processIds.push_back(pe32.th32ProcessID);
-        std::cout << std::left << std::setw(6) << index 
-                  << std::setw(10) << pe32.th32ProcessID 
-                  << std::setw(40) << pe32.szExeFile 
+        std::cout << std::left << std::setw(6) << index
+                  << std::setw(10) << pe32.th32ProcessID
+                  << std::setw(40) << pe32.szExeFile
                   << std::setw(15) << pe32.cntThreads << std::endl;
         index++;
     } while (Process32Next(hSnapshot, &pe32));
@@ -108,7 +108,7 @@ void ListAllProcesses() {
 void AutoRefreshProcesses() {
     std::cout << "Starting automatic refresh of process list. Press any key to stop." << std::endl;
     autoRefreshRunning = true;
-    
+
     // Create a separate thread to check for key presses
     std::thread keyCheckThread([]() {
         while (autoRefreshRunning) {
@@ -121,31 +121,29 @@ void AutoRefreshProcesses() {
         }
     });
     keyCheckThread.detach(); // Detach the thread
-    
+
     while (autoRefreshRunning) {
         system("cls"); // Clear screen
         std::cout << "Automatic process list refresh (press any key to stop)" << std::endl;
         ListAllProcesses(); // List all processes
         Sleep(2000); // Wait 2 seconds before next refresh
     }
-    
+
     std::cout << "Automatic refresh stopped." << std::endl;
 }
 
 // 3. Function to terminate a selected process
-void TerminateSelectedProcess(int index) {
-    if (index < 0 || index >= processIds.size()) {
-        std::cout << "Invalid process index." << std::endl;
-        return;
-    }
-
-    DWORD processId = processIds[index];
+void TerminateSelectedProcess(int processId) {
     HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, processId);
-    
+
+    std::cout << "after OpenProcess" << std::endl;
+
     if (hProcess == NULL) {
         DisplayError("Failed to open process");
         return;
     }
+
+    std::cout << "hProcess is not null" << std::endl;
 
     if (!TerminateProcess(hProcess, 0)) {
         DisplayError("Failed to terminate process");
@@ -166,7 +164,7 @@ void ListProcessThreads(int index) {
 
     DWORD processId = processIds[index];
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    
+
     if (hSnapshot == INVALID_HANDLE_VALUE) {
         DisplayError("Failed to create thread snapshot");
         return;
@@ -195,8 +193,8 @@ void ListProcessThreads(int index) {
 
     // Print header
     std::cout << "Threads of process with PID " << processId << ":" << std::endl;
-    std::cout << std::left << std::setw(15) << "TID" 
-              << std::setw(15) << "Base Priority" 
+    std::cout << std::left << std::setw(15) << "TID"
+              << std::setw(15) << "Base Priority"
               << std::setw(20) << "Status" << std::endl;
     std::cout << std::string(50, '-') << std::endl;
 
@@ -206,23 +204,23 @@ void ListProcessThreads(int index) {
             // Get additional information about the thread
             HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te32.th32ThreadID);
             std::string status = "Unknown";
-            
+
             if (hThread != NULL) {
                 // Get thread status
                 DWORD exitCode;
                 if (GetExitCodeThread(hThread, &exitCode)) {
                     status = (exitCode == STILL_ACTIVE) ? "Active" : "Terminated";
                 }
-                
-                std::cout << std::left << std::setw(15) << te32.th32ThreadID 
-                          << std::setw(15) << te32.tpBasePri 
+
+                std::cout << std::left << std::setw(15) << te32.th32ThreadID
+                          << std::setw(15) << te32.tpBasePri
                           << std::setw(20) << status << std::endl;
-                          
+
                 CloseHandle(hThread);
             }
             else {
-                std::cout << std::left << std::setw(15) << te32.th32ThreadID 
-                          << std::setw(15) << te32.tpBasePri 
+                std::cout << std::left << std::setw(15) << te32.th32ThreadID
+                          << std::setw(15) << te32.tpBasePri
                           << std::setw(20) << "No access" << std::endl;
             }
         }
@@ -240,7 +238,7 @@ void ListProcessModules(int index) {
 
     DWORD processId = processIds[index];
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
-    
+
     if (hProcess == NULL) {
         DisplayError("Failed to open process to get module information");
         return;
@@ -258,18 +256,18 @@ void ListProcessModules(int index) {
 
     // Print header
     std::cout << "Modules of process with PID " << processId << ":" << std::endl;
-    std::cout << std::left << std::setw(50) << "Module Name" 
+    std::cout << std::left << std::setw(50) << "Module Name"
               << std::setw(20) << "Base Address" << std::endl;
     std::cout << std::string(70, '-') << std::endl;
 
     // Iterate through all modules
     for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
         char szModName[MAX_PATH];
-        
+
         // Get the full path to the module
         if (GetModuleFileNameEx(hProcess, hModules[i], szModName, sizeof(szModName))) {
-            std::cout << std::left << std::setw(50) << szModName 
-                      << std::setw(20) << std::hex << std::showbase 
+            std::cout << std::left << std::setw(50) << szModName
+                      << std::setw(20) << std::hex << std::showbase
                       << reinterpret_cast<uintptr_t>(hModules[i]) << std::dec << std::endl;
         }
     }
@@ -350,7 +348,7 @@ void CreateThreadInProcess() {
     // Write thread function code to remote process
     // This example is simplified - in reality we would write the entire machine code
     // But for demonstration we'll use CreateRemoteThread with a function address in a system library
-    
+
     // Create thread in remote process
     HANDLE hThread = CreateRemoteThread(
         currentProcessHandle,
@@ -414,10 +412,10 @@ int main() {
                 AutoRefreshProcesses();
                 break;
             case 4: {
-                int index;
+                int processId;
                 std::cout << "Enter process number to terminate: ";
-                std::cin >> index;
-                TerminateSelectedProcess(index);
+                std::cin >> processId;
+                TerminateSelectedProcess(processId);
                 break;
             }
             case 5: {
