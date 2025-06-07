@@ -1,374 +1,466 @@
 #include <iostream>
 #include <Windows.h>
+#include <TlHelp32.h>
 #include <string>
 #include <vector>
-#include <thread>
-#include <chrono>
 #include <iomanip>
+#include <psapi.h>
+#include <thread>
 #include <conio.h>
 
-using namespace std;
-
 // Global variables
-bool timerRunning = false;
-bool alarmActive = false;
-vector<string> exerciseNames = {"Push-ups", "Squats", "Plank", "Jumping Jacks", "Burpees"};
+std::vector<DWORD> processIds;
+HANDLE currentProcessHandle = NULL;
+bool autoRefreshRunning = false;
 
-// Function to display error messages
-void DisplayError(const string& message) {
+// Function to display WinAPI error
+void DisplayError(const std::string& message) {
     DWORD error = GetLastError();
-    cout << message << " (Error code: " << error << ")" << endl;
+    std::cout << message << " (Error code: " << error << ")" << std::endl;
 }
 
-// Function to get current system time
-void DisplayCurrentTime() {
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    cout << "Current system time: "
-         << setfill('0') << setw(2) << st.wDay << "/"
-         << setfill('0') << setw(2) << st.wMonth << "/"
-         << st.wYear << " "
-         << setfill('0') << setw(2) << st.wHour << ":"
-         << setfill('0') << setw(2) << st.wMinute << ":"
-         << setfill('0') << setw(2) << st.wSecond << endl;
-}
+// 1. Function to create a new process
+void CreateNewProcess(const std::string& processPath) {
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
 
-// Task 1: Exercise Timer with countdown
-void ExerciseTimer() {
-    int exerciseTime, restTime, totalExercises;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
 
-    cout << "\n===== EXERCISE TIMER =====\n";
-    cout << "Enter exercise duration (seconds): ";
-    cin >> exerciseTime;
-    cout << "Enter rest time between exercises (seconds): ";
-    cin >> restTime;
-    cout << "Enter number of exercises: ";
-    cin >> totalExercises;
+    // Create a copy of the path for use in CreateProcess
+    char* processPathCopy = new char[processPath.length() + 1];
+    strcpy_s(processPathCopy, processPath.length() + 1, processPath.c_str());
 
-    if (totalExercises > exerciseNames.size()) {
-        totalExercises = exerciseNames.size();
-        cout << "Limited to " << exerciseNames.size() << " exercises.\n";
+    std::cout << "Starting process: " << processPath << std::endl;
+
+    // Create the process
+    if (!CreateProcess(
+        NULL,           // Executable name (NULL because we specify it in the command line)
+        processPathCopy, // Command line
+        NULL,           // Process security attributes
+        NULL,           // Thread security attributes
+        FALSE,          // Handle inheritance
+        0,              // Creation flags
+        NULL,           // Parent process environment
+        NULL,           // Current directory
+        &si,            // Startup information
+        &pi             // Process information
+    )) {
+        DisplayError("Error creating process");
+        delete[] processPathCopy;
+        return;
     }
 
-    cout << "\nStarting workout in 3 seconds...\n";
-    Sleep(3000);
+    std::cout << "Process created successfully!" << std::endl;
+    std::cout << "Process ID: " << pi.dwProcessId << std::endl;
+    std::cout << "Primary thread ID: " << pi.dwThreadId << std::endl;
 
-    timerRunning = true;
+    // Close handles
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    delete[] processPathCopy;
+}
 
-    for (int i = 0; i < totalExercises && timerRunning; i++) {
-        cout << "\n=== Exercise " << (i + 1) << "/" << totalExercises
-             << ": " << exerciseNames[i] << " ===\n";
+// 2. Function to list all processes
+void ListAllProcesses() {
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        DisplayError("Failed to create process snapshot");
+        return;
+    }
 
-        // Exercise countdown
-        for (int time = exerciseTime; time > 0 && timerRunning; time--) {
-            cout << "\rTime remaining: " << time << " seconds   ";
-            cout.flush();
+    PROCESSENTRY32 pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32);
 
-            // Check for ESC key to stop timer
-            if (_kbhit() && _getch() == 27) { // ESC key
-                timerRunning = false;
-                cout << "\n\nTimer stopped by user!\n";
-                return;
+    // Get the first process
+    if (!Process32First(hSnapshot, &pe32)) {
+        DisplayError("Failed to get information about the first process");
+        CloseHandle(hSnapshot);
+        return;
+    }
+
+    // Clear the process list
+    processIds.clear();
+
+    // Print header
+    std::cout << std::left << std::setw(6) << "#"
+              << std::setw(10) << "PID"
+              << std::setw(40) << "Process Name"
+              << std::setw(15) << "Thread Count" << std::endl;
+    std::cout << std::string(71, '-') << std::endl;
+
+    int index = 0;
+    // Iterate through all processes
+    do {
+        processIds.push_back(pe32.th32ProcessID);
+        std::cout << std::left << std::setw(6) << index
+                  << std::setw(10) << pe32.th32ProcessID
+                  << std::setw(40) << pe32.szExeFile
+                  << std::setw(15) << pe32.cntThreads << std::endl;
+        index++;
+    } while (Process32Next(hSnapshot, &pe32));
+
+    CloseHandle(hSnapshot);
+}
+
+// Function to automatically refresh the process list at regular intervals
+void AutoRefreshProcesses() {
+    std::cout << "Starting automatic refresh of process list. Press any key to stop." << std::endl;
+    autoRefreshRunning = true;
+
+    // Create a separate thread to check for key presses
+    std::thread keyCheckThread([]() {
+        while (autoRefreshRunning) {
+            if (_kbhit()) { // Check if a key was pressed
+                _getch(); // Consume the key
+                autoRefreshRunning = false;
+                break;
             }
-
-            Sleep(1000);
+            Sleep(100); // Short sleep to avoid high CPU usage
         }
+    });
+    keyCheckThread.detach(); // Detach the thread
 
-        if (!timerRunning) break;
+    while (autoRefreshRunning) {
+        system("cls"); // Clear screen
+        std::cout << "Automatic process list refresh (press any key to stop)" << std::endl;
+        ListAllProcesses(); // List all processes
+        Sleep(2000); // Wait 2 seconds before next refresh
+    }
 
-        // Play completion sound
-        Beep(1000, 300);
-        cout << "\nExercise completed!\n";
+    std::cout << "Automatic refresh stopped." << std::endl;
+}
 
-        // Rest period (except after last exercise)
-        if (i < totalExercises - 1) {
-            cout << "\nRest time:\n";
-            for (int time = restTime; time > 0 && timerRunning; time--) {
-                cout << "\rRest: " << time << " seconds   ";
-                cout.flush();
+// 3. Function to terminate a selected process
+void TerminateSelectedProcess(int processId) {
+    HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, processId);
 
-                if (_kbhit() && _getch() == 27) {
-                    timerRunning = false;
-                    cout << "\n\nTimer stopped by user!\n";
-                    return;
+    if (hProcess == NULL) {
+        DisplayError("Failed to open process");
+        return;
+    }
+
+    if (!TerminateProcess(hProcess, 0)) {
+        DisplayError("Failed to terminate process");
+        CloseHandle(hProcess);
+        return;
+    }
+
+    std::cout << "Process with PID " << processId << " successfully terminated." << std::endl;
+    CloseHandle(hProcess);
+}
+
+// 4. Function to list information about all threads of a selected process (Group 1 task)
+void ListProcessThreads(int index) {
+    if (index < 0 || index >= processIds.size()) {
+        std::cout << "Invalid process index." << std::endl;
+        return;
+    }
+
+    DWORD processId = processIds[index];
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        DisplayError("Failed to create thread snapshot");
+        return;
+    }
+
+    THREADENTRY32 te32;
+    te32.dwSize = sizeof(THREADENTRY32);
+
+    // Get the first thread
+    if (!Thread32First(hSnapshot, &te32)) {
+        DisplayError("Failed to get information about the first thread");
+        CloseHandle(hSnapshot);
+        return;
+    }
+
+    // Open the process to get detailed information
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, processId);
+    if (hProcess == NULL) {
+        DisplayError("Failed to open process to get thread information");
+        CloseHandle(hSnapshot);
+        return;
+    }
+
+    // Save the current process handle for later use
+    currentProcessHandle = hProcess;
+
+    // Print header
+    std::cout << "Threads of process with PID " << processId << ":" << std::endl;
+    std::cout << std::left << std::setw(15) << "TID"
+              << std::setw(15) << "Base Priority"
+              << std::setw(20) << "Status" << std::endl;
+    std::cout << std::string(50, '-') << std::endl;
+
+    // Iterate through all threads and display those belonging to the selected process
+    do {
+        if (te32.th32OwnerProcessID == processId) {
+            // Get additional information about the thread
+            HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te32.th32ThreadID);
+            std::string status = "Unknown";
+
+            if (hThread != NULL) {
+                // Get thread status
+                DWORD exitCode;
+                if (GetExitCodeThread(hThread, &exitCode)) {
+                    status = (exitCode == STILL_ACTIVE) ? "Active" : "Terminated";
                 }
 
-                Sleep(1000);
+                std::cout << std::left << std::setw(15) << te32.th32ThreadID
+                          << std::setw(15) << te32.tpBasePri
+                          << std::setw(20) << status << std::endl;
+
+                CloseHandle(hThread);
             }
-            cout << "\nGet ready for next exercise!\n";
-            Beep(800, 200);
+            else {
+                std::cout << std::left << std::setw(15) << te32.th32ThreadID
+                          << std::setw(15) << te32.tpBasePri
+                          << std::setw(20) << "No access" << std::endl;
+            }
         }
-    }
+    } while (Thread32Next(hSnapshot, &te32));
 
-    if (timerRunning) {
-        cout << "\n\n🎉 WORKOUT COMPLETED! Great job! 🎉\n";
-        // Play completion melody
-        Beep(523, 300); // C
-        Beep(659, 300); // E
-        Beep(784, 300); // G
-        Beep(1047, 600); // High C
-    }
-
-    timerRunning = false;
+    CloseHandle(hSnapshot);
 }
 
-// Task 2: Morning Alarm with Snooze Function
-void MorningAlarm() {
-    int hour, minute, snoozeMinutes;
-
-    cout << "\n===== MORNING ALARM =====\n";
-    cout << "Set alarm time:\n";
-    cout << "Hour (0-23): ";
-    cin >> hour;
-    cout << "Minute (0-59): ";
-    cin >> minute;
-    cout << "Snooze duration (minutes): ";
-    cin >> snoozeMinutes;
-
-    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-        cout << "Invalid time format!\n";
+// 5. Function to list information about all modules of a selected process
+void ListProcessModules(int index) {
+    if (index < 0 || index >= processIds.size()) {
+        std::cout << "Invalid process index." << std::endl;
         return;
     }
 
-    cout << "Alarm set for " << setfill('0') << setw(2) << hour
-         << ":" << setfill('0') << setw(2) << minute << "\n";
-    cout << "Press ESC to cancel alarm.\n";
+    DWORD processId = processIds[index];
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
 
-    alarmActive = true;
-
-    while (alarmActive) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-
-        // Check if alarm time is reached
-        if (st.wHour == hour && st.wMinute == minute && st.wSecond == 0) {
-            cout << "\n🔔 WAKE UP! ALARM IS RINGING! 🔔\n";
-
-            // Ring alarm for 30 seconds or until user responds
-            auto startTime = chrono::steady_clock::now();
-            bool snoozed = false;
-
-            while (chrono::duration_cast<chrono::seconds>(
-                chrono::steady_clock::now() - startTime).count() < 30) {
-
-                // Alternate beep sound
-                Beep(800, 500);
-                Beep(1000, 500);
-
-                cout << "\nPress 'S' for Snooze or 'O' to turn Off: ";
-
-                if (_kbhit()) {
-                    char choice = toupper(_getch());
-                    if (choice == 'S') {
-                        // Snooze alarm
-                        minute += snoozeMinutes;
-                        if (minute >= 60) {
-                            hour += minute / 60;
-                            minute = minute % 60;
-                            if (hour >= 24) hour = hour % 24;
-                        }
-
-                        cout << "\nAlarm snoozed for " << snoozeMinutes
-                             << " minutes. Next alarm: "
-                             << setfill('0') << setw(2) << hour
-                             << ":" << setfill('0') << setw(2) << minute << "\n";
-                        snoozed = true;
-                        break;
-                    } else if (choice == 'O') {
-                        cout << "\nAlarm turned off. Have a great day!\n";
-                        alarmActive = false;
-                        return;
-                    }
-                }
-            }
-
-            if (!snoozed && alarmActive) {
-                cout << "\nAlarm automatically stopped after 30 seconds.\n";
-                alarmActive = false;
-                return;
-            }
-        }
-
-        // Check for ESC key to cancel alarm
-        if (_kbhit() && _getch() == 27) {
-            cout << "\nAlarm cancelled by user.\n";
-            alarmActive = false;
-            return;
-        }
-
-        Sleep(1000); // Check every second
-    }
-}
-
-// Task 3: System Time Backward Adjustment Timer
-void SystemTimeBackwardTimer() {
-    cout << "\n===== SYSTEM TIME BACKWARD TIMER =====\n";
-    cout << "WARNING: This function requires administrator privileges!\n";
-    cout << "Current system time will be adjusted backward.\n\n";
-
-    DisplayCurrentTime();
-
-    int minutesBack;
-    cout << "\nEnter minutes to go back (1-60): ";
-    cin >> minutesBack;
-
-    if (minutesBack < 1 || minutesBack > 60) {
-        cout << "Invalid input! Must be between 1 and 60 minutes.\n";
+    if (hProcess == NULL) {
+        DisplayError("Failed to open process to get module information");
         return;
     }
 
-    cout << "Are you sure you want to change system time "
-         << minutesBack << " minutes back? (Y/N): ";
-    char confirm;
-    cin >> confirm;
+    HMODULE hModules[1024];
+    DWORD cbNeeded;
 
-    if (toupper(confirm) != 'Y') {
-        cout << "Operation cancelled.\n";
+    // Get the list of process modules
+    if (!EnumProcessModules(hProcess, hModules, sizeof(hModules), &cbNeeded)) {
+        DisplayError("Failed to get module list");
+        CloseHandle(hProcess);
         return;
     }
 
-    // Get current system time
-    SYSTEMTIME st;
-    GetSystemTime(&st); // Get UTC time
+    // Print header
+    std::cout << "Modules of process with PID " << processId << ":" << std::endl;
+    std::cout << std::left << std::setw(50) << "Module Name"
+              << std::setw(20) << "Base Address" << std::endl;
+    std::cout << std::string(70, '-') << std::endl;
 
-    // Store original time for display
-    SYSTEMTIME originalTime = st;
+    // Iterate through all modules
+    for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+        char szModName[MAX_PATH];
 
-    // Calculate new time (subtract minutes)
-    FILETIME ft, newFt;
-    SystemTimeToFileTime(&st, &ft);
-
-    // Convert to large integer for calculation
-    LARGE_INTEGER li;
-    li.LowPart = ft.dwLowDateTime;
-    li.HighPart = ft.dwHighDateTime;
-
-    // Subtract minutes (in 100-nanosecond intervals)
-    // 1 minute = 60 seconds * 10,000,000 (100-nanosecond intervals)
-    li.QuadPart -= (long long)minutesBack * 60 * 10000000;
-
-    // Convert back to FILETIME and SYSTEMTIME
-    newFt.dwLowDateTime = li.LowPart;
-    newFt.dwHighDateTime = li.HighPart;
-
-    SYSTEMTIME newSt;
-    FileTimeToSystemTime(&newFt, &newSt);
-
-    // Attempt to set new system time
-    if (SetSystemTime(&newSt)) {
-        cout << "\n✅ System time successfully changed!\n";
-        cout << "Previous time (UTC): "
-             << setfill('0') << setw(2) << originalTime.wDay << "/"
-             << setfill('0') << setw(2) << originalTime.wMonth << "/"
-             << originalTime.wYear << " "
-             << setfill('0') << setw(2) << originalTime.wHour << ":"
-             << setfill('0') << setw(2) << originalTime.wMinute << ":"
-             << setfill('0') << setw(2) << originalTime.wSecond << "\n";
-
-        cout << "New time (UTC): "
-             << setfill('0') << setw(2) << newSt.wDay << "/"
-             << setfill('0') << setw(2) << newSt.wMonth << "/"
-             << newSt.wYear << " "
-             << setfill('0') << setw(2) << newSt.wHour << ":"
-             << setfill('0') << setw(2) << newSt.wMinute << ":"
-             << setfill('0') << setw(2) << newSt.wSecond << "\n";
-
-        cout << "\nCurrent local time:\n";
-        DisplayCurrentTime();
-
-        // Ask if user wants to restore original time
-        cout << "\nDo you want to restore the original time? (Y/N): ";
-        cin >> confirm;
-
-        if (toupper(confirm) == 'Y') {
-            if (SetSystemTime(&originalTime)) {
-                cout << "✅ Original time restored successfully!\n";
-                DisplayCurrentTime();
-            } else {
-                DisplayError("❌ Failed to restore original time");
-            }
+        // Get the full path to the module
+        if (GetModuleFileNameEx(hProcess, hModules[i], szModName, sizeof(szModName))) {
+            std::cout << std::left << std::setw(50) << szModName
+                      << std::setw(20) << std::hex << std::showbase
+                      << reinterpret_cast<uintptr_t>(hModules[i]) << std::dec << std::endl;
         }
-
-    } else {
-        DisplayError("❌ Failed to change system time");
-        cout << "Make sure to run the program as Administrator!\n";
     }
+
+    CloseHandle(hProcess);
 }
 
-// Function to display current time continuously
-void DisplayTimeMonitor() {
-    cout << "\n===== TIME MONITOR =====\n";
-    cout << "Press any key to stop monitoring...\n\n";
+// 6. Function to launch a new process with parameters
+void StartProcessWithParameters(const std::string& processPath, const std::string& parameters) {
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
 
-    while (!_kbhit()) {
-        cout << "\r";
-        DisplayCurrentTime();
-        Sleep(1000);
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    // Create command line from process and parameters
+    std::string commandLine = processPath + " " + parameters;
+    char* commandLineCopy = new char[commandLine.length() + 1];
+    strcpy_s(commandLineCopy, commandLine.length() + 1, commandLine.c_str());
+
+    std::cout << "Starting process with parameters: " << commandLine << std::endl;
+
+    // Create the process
+    if (!CreateProcess(
+        NULL,           // Executable name
+        commandLineCopy, // Command line
+        NULL,           // Process security attributes
+        NULL,           // Thread security attributes
+        FALSE,          // Handle inheritance
+        0,              // Creation flags
+        NULL,           // Parent process environment
+        NULL,           // Current directory
+        &si,            // Startup information
+        &pi             // Process information
+    )) {
+        DisplayError("Error creating process with parameters");
+        delete[] commandLineCopy;
+        return;
     }
-    _getch(); // Consume the key press
-    cout << "\nTime monitoring stopped.\n";
+
+    std::cout << "Process created successfully!" << std::endl;
+    std::cout << "Process ID: " << pi.dwProcessId << std::endl;
+
+    // Close handles
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    delete[] commandLineCopy;
 }
 
-// Main menu
+// Function to create a new thread inside a selected process (Group 1 additional task)
+DWORD WINAPI ThreadFunction(LPVOID lpParam) {
+    // This thread just displays a message and exits
+    MessageBoxA(NULL, "New thread created successfully!", "Information", MB_OK | MB_ICONINFORMATION);
+    return 0;
+}
+
+void CreateThreadInProcess() {
+    if (currentProcessHandle == NULL) {
+        std::cout << "Please select a process first by using the list threads function." << std::endl;
+        return;
+    }
+
+    // Allocate memory inside the selected process for thread code
+    LPVOID remoteCode = VirtualAllocEx(
+        currentProcessHandle,
+        NULL,
+        4096,  // Memory size
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE
+    );
+
+    if (remoteCode == NULL) {
+        DisplayError("Failed to allocate memory in remote process");
+        return;
+    }
+
+    // Write thread function code to remote process
+    // This example is simplified - in reality we would write the entire machine code
+    // But for demonstration we'll use CreateRemoteThread with a function address in a system library
+
+    // Create thread in remote process
+    HANDLE hThread = CreateRemoteThread(
+        currentProcessHandle,
+        NULL,
+        0,
+        (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"), "Sleep"),
+        (LPVOID)10000,  // Argument - sleep for 10 seconds
+        0,
+        NULL
+    );
+
+    if (hThread == NULL) {
+        DisplayError("Failed to create thread in remote process");
+        VirtualFreeEx(currentProcessHandle, remoteCode, 0, MEM_RELEASE);
+        return;
+    }
+
+    std::cout << "New thread successfully created in the selected process!" << std::endl;
+    std::cout << "Thread ID: " << GetThreadId(hThread) << std::endl;
+
+    // Close thread handle
+    CloseHandle(hThread);
+}
+
+// Main program menu
 void ShowMenu() {
-    cout << "\n===== LAB 5 - SYSTEM TIME & TIMER MANAGEMENT =====\n";
-    cout << "Variant 3 Tasks:\n";
-    cout << "1. Exercise Timer (Countdown for fitness exercises)\n";
-    cout << "2. Morning Alarm (with snooze function)\n";
-    cout << "3. System Time Backward Adjustment\n";
-    cout << "4. Display Current Time\n";
-    cout << "5. Time Monitor (real-time display)\n";
-    cout << "0. Exit\n";
-    cout << "\nEnter your choice: ";
+    std::cout << "\n===== Windows Process Manager =====\n";
+    std::cout << "1. Create a new process\n";
+    std::cout << "2. Show all processes\n";
+    std::cout << "3. Auto-refresh process list (real-time monitoring)\n";
+    std::cout << "4. Terminate selected process\n";
+    std::cout << "5. Show process threads (Group 1 task)\n";
+    std::cout << "6. Show process modules\n";
+    std::cout << "7. Launch process with parameters\n";
+    std::cout << "8. Create a new thread in selected process (Group 1 additional task)\n";
+    std::cout << "0. Exit\n";
+    std::cout << "Enter your choice: ";
 }
 
 int main() {
-    cout << "=== Windows System Time and Timer Management ===\n";
-    cout << "Lab 5 - Variant 3 Implementation\n";
-
     int choice;
     bool running = true;
 
     while (running) {
         ShowMenu();
-        cin >> choice;
+        std::cin >> choice;
+        std::cin.ignore(); // Clear input buffer
 
         switch (choice) {
-            case 1:
-                ExerciseTimer();
+            case 1: {
+                std::string processPath;
+                std::cout << "Enter path to executable file: ";
+                std::getline(std::cin, processPath);
+                CreateNewProcess(processPath);
                 break;
+            }
             case 2:
-                MorningAlarm();
+                ListAllProcesses();
                 break;
             case 3:
-                SystemTimeBackwardTimer();
+                AutoRefreshProcesses();
                 break;
-            case 4:
-                cout << "\n";
-                DisplayCurrentTime();
+            case 4: {
+                int processId;
+                std::cout << "Enter process number to terminate: ";
+                std::cin >> processId;
+                TerminateSelectedProcess(processId);
                 break;
-            case 5:
-                DisplayTimeMonitor();
+            }
+            case 5: {
+                int index;
+                std::cout << "Enter process number to view threads: ";
+                std::cin >> index;
+                ListProcessThreads(index);
+                break;
+            }
+            case 6: {
+                int index;
+                std::cout << "Enter process number to view modules: ";
+                std::cin >> index;
+                ListProcessModules(index);
+                break;
+            }
+            case 7: {
+                std::string processPath, parameters;
+                std::cout << "Enter path to executable file: ";
+                std::getline(std::cin, processPath);
+                std::cout << "Enter launch parameters: ";
+                std::getline(std::cin, parameters);
+                StartProcessWithParameters(processPath, parameters);
+                break;
+            }
+            case 8:
+                CreateThreadInProcess();
                 break;
             case 0:
                 running = false;
-                cout << "Goodbye!\n";
                 break;
             default:
-                cout << "Invalid choice. Please try again.\n";
+                std::cout << "Invalid choice. Please try again." << std::endl;
         }
 
-        if (running && choice != 0) {
-            cout << "\nPress Enter to continue...";
-            cin.ignore();
-            cin.get();
-            system("cls");
+        if (running) {
+            std::cout << "\nPress Enter to continue...";
+            std::cin.get();
+            system("cls"); // Clear screen
         }
     }
 
-    // Cleanup
-    timerRunning = false;
-    alarmActive = false;
+    // Close process handle if it was opened
+    if (currentProcessHandle != NULL) {
+        CloseHandle(currentProcessHandle);
+    }
+
+    // Ensure auto-refresh is stopped if running
+    autoRefreshRunning = false;
 
     return 0;
 }
